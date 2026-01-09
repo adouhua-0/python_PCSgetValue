@@ -15,24 +15,23 @@ TOPIC = "vrb/pcs/read"
 # =========================
 # Log 檔案設定（一定要是檔案）
 # =========================
-LOG_FILE = "/usr/plc/PCSlog.csv"
+LOG_FILE = os.path.expanduser("~/plc/PCSlog.csv")
 
 # 若目錄不存在，自動建立（工程必備）
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 HEADER_PRINTED = False
 
+
 # =========================
 # PCS 資料解析
 # =========================
 def get_PCS_Value(msg):
-
     try:
         payload = json.loads(msg.payload.decode("utf-8", errors="replace"))
     except json.JSONDecodeError:
         print("Invalid JSON")
         return None
-
 
     # ---------- 2. 先讀控制指令 ----------
     PCS_REM_P_SET = payload.get("PCS_REM_P_SET_40032")
@@ -69,13 +68,13 @@ def get_PCS_Value(msg):
 # =========================
 # MQTT Callback
 # =========================
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code == 0:
         print("MQTT connected")
         client.subscribe(TOPIC)
         print(f"Subscribed to {TOPIC}")
     else:
-        print(f"MQTT connection failed, rc={rc}")
+        print(f"MQTT connection failed, rc={reason_code}")
 
 
 def on_message(client, userdata, msg):
@@ -109,14 +108,15 @@ def on_message(client, userdata, msg):
         print(f"File write error: {e}")
 
 
-
 # =========================
 # 主程式
 # =========================
 def main():
     print("Starting PCS MQTT logger...")
+    print(f"Broker: {BROKER_IP}:{BROKER_PORT}")
+    print(f"Logging to: {LOG_FILE}")
 
-    client = mqtt.Client()
+    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
 
     client.on_connect = on_connect
     client.on_message = on_message
