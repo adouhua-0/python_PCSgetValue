@@ -1,9 +1,8 @@
-import json
-from datetime import datetime
-import paho.mqtt.client as mqtt
 import os
+import json
 import time
 import csv
+import paho.mqtt.client as mqtt
 
 # =========================
 # MQTT 基本設定
@@ -13,125 +12,128 @@ BROKER_PORT = 1883
 TOPIC = "vrb/pcs/read"
 
 # =========================
-# Log 檔案設定（一定要是檔案）
+# CSV 設定
 # =========================
-LOG_FILE = "/usr/plc/PCSlog.csv"
-
-# 若目錄不存在，自動建立（工程必備）
+LOG_FILE = "C:\\Users\\huiting\\PY\\MQTTgetValue\\PCS.csv"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-HEADER_PRINTED = False
+# =========================
+# 全域狀態
+# =========================
+LOG_INTERVAL = 1.0
+
+LAST_LOG_TIME = 0
+LOGGING_ACTIVE = False
+
+RUN_ID = 0
+SAMPLE_INDEX = 0
+
+HEADER = [
+    "run_id",
+    "sample_index",
+    "PCS_BATTERY_POWER_30050",
+    "PCS_INLET_AIR_TEMP_30060",
+    "PCS_IGBT_MAX_TEMP_30062",
+]
 
 # =========================
-# PCS 資料解析
-# =========================
-def get_PCS_Value(msg):
-
-    try:
-        payload = json.loads(msg.payload.decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        print("Invalid JSON")
-        return None
-
-
-    # ---------- 2. 先讀控制指令 ----------
-    PCS_REM_P_SET = payload.get("PCS_REM_P_SET_40032")
-
-    try:
-        PCS_REM_P_SET = float(PCS_REM_P_SET)
-    except (TypeError, ValueError):
-        return None
-
-    # ---------- 3. 若指令為 0，不處理 ----------
-    if PCS_REM_P_SET == 0:
-        return None
-
-    # ---------- 4. 時間戳記 ----------
-    timestamp = datetime.now().isoformat(timespec="seconds")
-
-    # ---------- 5. 抓即時資料 ----------
-    data = {
-        "timestamp": timestamp,
-        "PCS_LOC_P_SET_40004": PCS_REM_P_SET,
-        "PCS_REAL_P_SET_30000": payload.get("PCS_REAL_P_SET_30000"),
-        "PCS_ACTIVE_POWER_30044": payload.get("PCS_ACTIVE_POWER_30044"),
-        "PCS_BATTERY_CURR_30048": payload.get("PCS_BATTERY_CURR_30048"),
-        "PCS_BATTERY_VOLT_30049": payload.get("PCS_BATTERY_VOLT_30049"),
-        "PCS_BATTERY_POWER_30050": payload.get("PCS_BATTERY_POWER_30050"),
-        "PCS_INLET_AIR_TEMP_30060": payload.get("PCS_INLET_AIR_TEMP_30060"),
-        "PCS_OUTLET_AIR_TEMP_30061": payload.get("PCS_OUTLET_AIR_TEMP_30061"),
-        "PCS_IGBT_MAX_TEMP_30062": payload.get("PCS_IGBT_MAX_TEMP_30062"),
-    }
-
-    return data
-
-
-# =========================
-# MQTT Callback
+# MQTT callbacks
 # =========================
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print("MQTT connected")
         client.subscribe(TOPIC)
-        print(f"Subscribed to {TOPIC}")
     else:
-        print(f"MQTT connection failed, rc={rc}")
+        print("MQTT connect failed:", rc)
 
 
 def on_message(client, userdata, msg):
-    global HEADER_PRINTED
+    global LAST_LOG_TIME
+    global LOGGING_ACTIVE, RUN_ID, SAMPLE_INDEX
 
-    pcs_data = get_PCS_Value(msg)
-    if pcs_data is None:
+    now = time.time()
+    if now - LAST_LOG_TIME < LOG_INTERVAL:
         return
+    LAST_LOG_TIME = int(now)
 
     try:
-        with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=pcs_data.keys())
+        payload = json.loads(msg.payload.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return
 
-            # 🔴 只會進來一次
-            if not HEADER_PRINTED:
-                # 1️⃣ 印出變數名稱（只一次）
-                print("CSV HEADER =", list(pcs_data.keys()))
+    PCS_REM_CMD = payload.get("PCS_REM_CMD_40030", 0)
+    PCS_REM_P_SET = payload.get("PCS_REM_P_SET_40032", 0)
 
-                # 2️⃣ 寫 header（只一次）
-                writer.writeheader()
+    try:
+        PCS_REM_P_SET = float(PCS_REM_P_SET)
+    except:
+        PCS_REM_P_SET = 0
 
-                # 3️⃣ 設 flag
-                HEADER_PRINTED = True
+    # =========================
+    # ▶ START logging
+    # =========================
+    if  PCS_REM_P_SET != 0:
 
-            # 4️⃣ 每筆都寫資料
-            writer.writerow(pcs_data)
+        if not LOGGING_ACTIVE:
+            RUN_ID += 1
+            SAMPLE_INDEX = 0
+            LOGGING_ACTIVE = True
+            print(f"=== RUN {RUN_ID} START ===")
 
-        print("CSV write OK")
+        SAMPLE_INDEX += 1
 
-    except OSError as e:
-        print(f"File write error: {e}")
+        row = {
+            "run_id": RUN_ID,
+            "sample_index": SAMPLE_INDEX,
+            "PCS_BATTERY_POWER_30050": payload.get("PCS_BATTERY_POWER_30050"),
+            "PCS_INLET_AIR_TEMP_30060": payload.get("PCS_INLET_AIR_TEMP_30060"),
+            "PCS_IGBT_MAX_TEMP_30062": payload.get("PCS_IGBT_MAX_TEMP_30062"),
+        }
+
+    # =========================
+    # ■ STOP logging
+    # =========================
+    else:
+        if LOGGING_ACTIVE:
+            print(f"=== RUN {RUN_ID} END ({SAMPLE_INDEX} samples) ===")
+        LOGGING_ACTIVE = False
+        return
+
+    # =========================
+    # Write CSV
+    # =========================
+    write_header = not os.path.exists(LOG_FILE)
+
+    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=HEADER)
+
+        # 🔴 第一次建立檔案時
+        if write_header:
+            print("CSV HEADER =", HEADER)   # ✅ 只印一次
+            writer.writeheader()
+
+        writer.writerow(row)
 
 
 
 # =========================
-# 主程式
+# main
 # =========================
 def main():
     print("Starting PCS MQTT logger...")
 
     client = mqtt.Client()
-
     client.on_connect = on_connect
     client.on_message = on_message
 
-    # keepalive 60 秒
     client.connect(BROKER_IP, BROKER_PORT, keepalive=60)
-
-    # 非阻塞 loop（可處理 reconnect）
     client.loop_start()
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("Stopping MQTT logger...")
+        print("Stopping...")
     finally:
         client.loop_stop()
         client.disconnect()
